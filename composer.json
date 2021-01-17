@@ -1,6 +1,6 @@
 {
     "name": "wind-framework/beanstalk",
-    "description": "Wind framework base core.",
+    "description": "Wind framework coroutine beanstalk client.",
     "type": "library",
     "version": "0.1.0",
     "require": {
