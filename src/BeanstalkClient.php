@@ -705,6 +705,12 @@ class BeanstalkClient
                 $meta = explode(' ', substr($recv, 0, $metaEnd));
                 $data['status'] = array_shift($meta);
                 $data['meta'] = $meta;
+
+                //仅有 reserve 命令可能在 $chunk 为 true 时返回 DEADLINE_SOON 或 TIMED_OUT 从而没有 body
+                if ($chunk && !isset($meta[$bytesMetaPos])) {
+                    $chunk = false;
+                }
+
                 $data['body'] = $chunk ? substr($recv, $metaEnd+2, $meta[$bytesMetaPos]) : substr($recv, $metaEnd+2);
             } else {
                 $data['body'] .= substr($recv, 0, $data['meta'][$bytesMetaPos]-strlen($data['body']));
