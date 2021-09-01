@@ -2,9 +2,9 @@
     "name": "wind-framework/beanstalk",
     "description": "Wind framework coroutine beanstalk client.",
     "type": "library",
-    "version": "0.1.2",
+    "version": "1.0.0-dev",
     "require": {
-        "wind-framework/wind-framework": "~0.1"
+        "wind-framework/wind-framework": "1.0.0-dev"
     },
     "license": "Apache-2.0",
     "authors": [

@@ -2,16 +2,14 @@
 
 namespace Wind\Beanstalk;
 
-use Amp\Promise;
-use Amp\Success;
 use Amp\Deferred;
-use function Amp\call;
-use function Amp\delay;
-use function Amp\asyncCall;
-
 use Wind\Utils\ArrayUtil;
 use Workerman\Connection\AsyncTcpConnection;
-use Workerman\Lib\Timer;
+use Workerman\Timer;
+
+use function Amp\asyncCallable;
+use function Amp\await;
+use function Amp\defer;
 
 /**
  * 协程 Beanstalk 客户端
@@ -66,7 +64,7 @@ class BeanstalkClient
 
     /**
      * 发送中的命令
-     * 
+     *
      * 用于发送时中断后的命令恢复
      *
      * @var array|null
@@ -102,15 +100,15 @@ class BeanstalkClient
 
     /**
      * 连接到服务器
-     * 
+     *
      * 在使用任何命令前，需先连接到服务器
-     * 
-     * @return Promise<bool>
+     *
+     * @return bool
      */
 	public function connect()
 	{
 		if ($this->connected) {
-			return new Success();
+			return true;
         }
 
         //连接超时设置
@@ -133,29 +131,29 @@ class BeanstalkClient
 
             //重连后恢复相应 tube 的监听和使用
             if ($this->autoReconnect) {
-                asyncCall(function() {
+                defer(function() {
                     $pending = $this->pending;
                     $sending = $this->sending;
                     $this->pending = $this->sending = null;
-    
+
                     if ($this->tubeUsed != 'default') {
-                        yield $this->useTube($this->tubeUsed);
+                        $this->useTube($this->tubeUsed);
                     }
-    
+
                     $watchDefault = false;
-    
+
                     foreach ($this->watchTubes as $tube) {
                         if ($tube == 'default') {
                             $watchDefault = true;
                         } else {
-                            yield $this->watch($tube);
+                            $this->watch($tube);
                         }
                     }
-    
+
                     if (!$watchDefault) {
-                        yield $this->ignore('default');
+                        $this->ignore('default');
                     }
-    
+
                     if (is_callable($this->onConnectCallback)) {
                         call_user_func($this->onConnectCallback);
                         $this->onConnectCallback = null;
@@ -175,7 +173,7 @@ class BeanstalkClient
                 }
             }
         };
-        
+
         $this->connection->onError = function($connection, $code, $message) use (&$connectTimer) {
             if ($connectTimer) {
                 Timer::del($connectTimer);
@@ -202,9 +200,7 @@ class BeanstalkClient
             if ($this->autoReconnect) {
                 //自动重连时等待并尝试重连
                 echo "Reconnect after {$this->reconnectDelay} seconds.\n";
-                delay($this->reconnectDelay*1000)->onResolve(function() {
-                    $this->connect();
-                });
+                Timer::add($this->reconnectDelay, asyncCallable([$this, 'connect']), [], false);
             } elseif ($this->pending) {
                 //不自动重连时，断开连接之前的动作抛出异常
                 $this->pending->fail(new BeanstalkException('Disconnected.'));
@@ -218,7 +214,7 @@ class BeanstalkClient
         };
 
         $defer = $this->connectDefer ?? new Deferred();
-        
+
         $this->onConnectCallback = function() use ($defer) {
             $defer->resolve();
         };
@@ -232,22 +228,22 @@ class BeanstalkClient
         $this->connection->connect();
         $this->connectDefer = $defer;
 
-        return $defer->promise();
+        return await($defer->promise());
     }
-    
+
     /**
      * 主动关闭连接
-     * 
+     *
      * 注意
      * 主动关闭连接后再重新调用 connect() 连接成功并不会恢复之前的监控与 reserve 命令状态。
      * 主动关闭连接后并不会触发重新连接。
      *
-     * @return Promise
+     * @return void
      */
     public function close()
     {
         if (!$this->connected) {
-            return new Success();
+            return;
         }
 
         $defer = new Deferred();
@@ -268,7 +264,7 @@ class BeanstalkClient
             $this->connection->destroy();
         }
 
-        return $defer->promise();
+        return await($defer->promise());
     }
 
     /**
@@ -278,75 +274,68 @@ class BeanstalkClient
      * @param int $pri 消息优先级，数字越小越优先，范围是2^32正整数（0-4,294,967,295)，默认为 1024
      * @param int $delay 消息延迟秒数，默认0为不延迟
      * @param int $ttr 消息处理时间，当消息被 RESERVED 后，超出此时间状态未发生变更，则重新回到 ready 队列，最小值为1
-     * @return Promise<int> 成功返回消息ID
+     * @return int 成功返回消息ID
      */
 	public function put($data, $pri=self::DEFAULT_PRI, $delay=0, $ttr=self::DEFAULT_TTR)
 	{
         $cmd = sprintf("put %d %d %d %d\r\n%s", $pri, $delay, $ttr, strlen($data), $data);
+        $res = $this->send($cmd);
 
-        return call(function() use ($cmd) {
-            $res = yield $this->send($cmd);
-    
-            if ($res['status'] == 'INSERTED') {
-                return $res['meta'][0];
-            } else {
-                throw new BeanstalkException($res['status']);
-            }
-        });
+        if ($res['status'] == 'INSERTED') {
+            return $res['meta'][0];
+        } else {
+            throw new BeanstalkException($res['status']);
+        }
 	}
 
     /**
      * 使用指定 Tube
-     * 
+     *
      * 用于生产者。
      * 指定 put 命令存入消息的 tube 名称，不指定时默认为 default。
      *
      * @param string $tube
-     * @return Promise<bool>
+     * @return bool
      */
 	public function useTube($tube)
 	{
-        return call(function() use ($tube) {
-            $ret = yield $this->send(sprintf('use %s', $tube));
-            if ($ret['status'] == 'USING' && $ret['meta'][0] == $tube) {
-                $this->tubeUsed = $tube;
-                return true;
-            } else {
-                throw new BeanstalkException($ret['status'].": Use tube $tube failed.");
-            }
-        });
+        $ret = $this->send(sprintf('use %s', $tube));
+        if ($ret['status'] == 'USING' && $ret['meta'][0] == $tube) {
+            $this->tubeUsed = $tube;
+            return true;
+        } else {
+            throw new BeanstalkException($ret['status'].": Use tube $tube failed.");
+        }
 	}
 
     /**
      * 取出（预订）消息
      *
      * @param int $timeout 取出消息的超时时间秒数，默认不超时，若设置了时间，当达到时间仍没有消息则返回 TIMED_OUT 异常消息
-     * @return Promise<array> 返回数组包含以下字段，id: 消息ID, body: 消息内容, bytes: 消息内容长度
+     * @return array 返回数组包含以下字段，id: 消息ID, body: 消息内容, bytes: 消息内容长度
      */
 	public function reserve($timeout=null)
 	{
         $cmd = isset($timeout) ? sprintf('reserve-with-timeout %d', $timeout) : 'reserve';
-        
-        return call(function() use ($cmd) {
-            $res = yield $this->send($cmd, null, true, 1);
-            if ($res['status'] == 'RESERVED') {
-                list($id, $bytes) = $res['meta'];
-                return [
-                    'id' => $id,
-                    'body' => $res['body'],
-                    'bytes' => $bytes
-                ];
-            } else {
-                throw new BeanstalkException($res['status']);
-            }
-        });
+        $res = $this->send($cmd, null, true, 1);
+
+        if ($res['status'] == 'RESERVED') {
+            list($id, $bytes) = $res['meta'];
+            return [
+                'id' => $id,
+                'body' => $res['body'],
+                'bytes' => $bytes
+            ];
+        } else {
+            throw new BeanstalkException($res['status']);
+        }
 	}
 
     /**
      * 删除消息
      *
      * @param int $id
-     * @return Promise<bool>
+     * @return bool
      */
 	public function delete($id)
 	{
@@ -359,7 +348,7 @@ class BeanstalkClient
      * @param int $id 消息ID
      * @param int $pri 消息优先级，与 put 一致
      * @param int $delay 消息延迟时间，与 put 一致
-     * @return Promise<bool>
+     * @return bool
      */
 	public function release($id, $pri=self::DEFAULT_PRI, $delay=0)
 	{
@@ -370,7 +359,7 @@ class BeanstalkClient
      * 将消息放入 Buried（失败）队列
      *
      * 放入 buried 队列后的消息可以由 kick 唤醒
-     * 
+     *
      * @param int $id
      * @param int $pri kick 出时的优先级
      * @return void
@@ -382,7 +371,7 @@ class BeanstalkClient
 
     /**
      * 延续消息处理时间
-     * 
+     *
      * 在处理期间的消息可以通过 touch 延迟 ttr 时间，当调用 touch 后，消息的 ttr 的时间将从头算起。
      *
      * @param int $id
@@ -395,59 +384,55 @@ class BeanstalkClient
 
     /**
      * 监控指定 tube 的消息
-     * 
+     *
      * 默认监控 default 的 tube 消息，调用此方法将添加更多的 tube 到监控中。
      * 可以使用 ignore 来取消指定 tube 的监控，如果连接断开后监控将重置为 default。
      * 如果 autoReconnect 设为 true，则自动重连成功后会继续保持之前的监控。
      *
      * @param string $tube
-     * @return Promise<int> 返回当前监控Tube数量
+     * @return int 返回当前监控Tube数量
      */
 	public function watch($tube)
 	{
-        return call(function() use ($tube) {
-            $res = yield $this->send(sprintf('watch %s', $tube));
+        $res = $this->send(sprintf('watch %s', $tube));
 
-            if ($res['status'] == 'WATCHING') {
-                if (!in_array($tube, $this->watchTubes)) {
-                    $this->watchTubes[] = $tube;
-                }
-                return $res['meta'][0];
-            } else {
-                throw new BeanstalkException($res['status']);
+        if ($res['status'] == 'WATCHING') {
+            if (!in_array($tube, $this->watchTubes)) {
+                $this->watchTubes[] = $tube;
             }
-        });
+            return $res['meta'][0];
+        } else {
+            throw new BeanstalkException($res['status']);
+        }
 	}
 
     /**
      * 忽略指定 Tube 的监控
-     * 
+     *
      * 忽略后的 tube 将不再获取其消息，同 watch，当 autoReconnect 为 true 时，则自动重连后将会继续忽略之前的设定。
      *
      * @param string $tube
-     * @return Promise<int> 返回剩余监控 tube 数量
+     * @return int 返回剩余监控 tube 数量
      */
 	public function ignore($tube)
 	{
-        return call(function() use ($tube) {
-            $res = yield $this->send(sprintf('ignore %s', $tube));
+        $res = $this->send(sprintf('ignore %s', $tube));
 
-            if ($res['status'] == 'WATCHING') {
-                ArrayUtil::removeElement($this->watchTubes, $tube);
-                return $res['meta'][0];
-            } else {
-                throw new BeanstalkException($res['status']);
-            }
-        });
+        if ($res['status'] == 'WATCHING') {
+            ArrayUtil::removeElement($this->watchTubes, $tube);
+            return $res['meta'][0];
+        } else {
+            throw new BeanstalkException($res['status']);
+        }
 	}
 
     /**
      * 检查指定的消息
-     * 
+     *
      * 获取指定的消息内容，但不会改变消息状态
      *
      * @param int $id
-     * @return Promise<array> 返回内容与 reserve 一致
+     * @return array 返回内容与 reserve 一致
      */
 	public function peek($id)
 	{
@@ -457,7 +442,7 @@ class BeanstalkClient
     /**
      * 检查就绪队列中的下一条消息
      *
-     * @return Promise<array>
+     * @return array
      */
 	public function peekReady()
 	{
@@ -466,8 +451,8 @@ class BeanstalkClient
 
     /**
      * 检查延迟队列中的下一条消息
-     * 
-     * @return Promise<array>
+     *
+     * @return array
      */
 	public function peekDelayed()
 	{
@@ -476,8 +461,8 @@ class BeanstalkClient
 
     /**
      * 检查失败队列中的下一条消息
-     * 
-     * @return Promise<array>
+     *
+     * @return array
      */
 	public function peekBuried()
 	{
@@ -486,51 +471,47 @@ class BeanstalkClient
 
     /**
      * 读取 peek 相应命令的响应
-     * 
-     * @return Promise<array>
+     *
+     * @return array
      */
 	protected function peekRead($cmd)
 	{
-        return call(function() use ($cmd) {
-            $res = yield $this->send($cmd, null, true, 1);
+        $res = $this->send($cmd, null, true, 1);
 
-            if ($res['status'] == 'FOUND') {
-                list($id, $bytes) = $res['meta'];
-                return [
-                    'id' => $id,
-                    'body' => $res['body'],
-                    'bytes' => $bytes
-                ];
-            } else {
-                throw new BeanstalkException($res['status']);
-            }
-        });
+        if ($res['status'] == 'FOUND') {
+            list($id, $bytes) = $res['meta'];
+            return [
+                'id' => $id,
+                'body' => $res['body'],
+                'bytes' => $bytes
+            ];
+        } else {
+            throw new BeanstalkException($res['status']);
+        }
 	}
 
     /**
      * 将失败队列中的消息重新踢致就绪或延迟队列中
      *
      * @param int $bound 踢出的消息数量上限
-     * @return Promise<int> 返回实际踢出的消息数量
+     * @return int 返回实际踢出的消息数量
      */
 	public function kick($bound)
 	{
-        return call(function() use ($bound) {
-            $res = yield $this->send(sprintf('kick %d', $bound));
+        $res = $this->send(sprintf('kick %d', $bound));
 
-            if ($res['status'] == 'KICKED') {
-                return $res['meta'][0];
-            } else {
-                throw new BeanstalkException($res['status']);
-            }
-        });
+        if ($res['status'] == 'KICKED') {
+            return $res['meta'][0];
+        } else {
+            throw new BeanstalkException($res['status']);
+        }
 	}
 
     /**
      * 将指定的消息踢出到就绪或延迟队列中
      *
      * @param int $id
-     * @return Promise<bool>
+     * @return bool
      */
 	public function kickJob($id)
 	{
@@ -541,7 +522,7 @@ class BeanstalkClient
      * 统计消息相关信息
      *
      * @param int $id
-     * @return Promise<array>
+     * @return array
      */
 	public function statsJob($id)
 	{
@@ -552,7 +533,7 @@ class BeanstalkClient
      * 统计 Tube 相关信息
      *
      * @param string $tube
-     * @return Promise<array>
+     * @return array
      */
 	public function statsTube($tube)
 	{
@@ -562,7 +543,7 @@ class BeanstalkClient
     /**
      * 返回服务器相关信息
      *
-     * @return Promise<array>
+     * @return array
      */
 	public function stats()
 	{
@@ -571,8 +552,8 @@ class BeanstalkClient
 
     /**
      * 列出所在存在的 Tube
-     * 
-     * @return Promise<array>
+     *
+     * @return array
      */
 	public function listTubes()
 	{
@@ -582,24 +563,22 @@ class BeanstalkClient
     /**
      * 检查当前客户端正在使用的 tube
      *
-     * @return Promise<string>
+     * @return string
      */
 	public function listTubeUsed()
 	{
-        return call(function() {
-            $res = yield $this->send('list-tube-used');
-            if ($res['status'] == 'USING') {
-                return $res['meta'][0];
-            } else {
-                throw new BeanstalkException($res['status']);
-            }
-        });
+        $res = $this->send('list-tube-used');
+        if ($res['status'] == 'USING') {
+            return $res['meta'][0];
+        } else {
+            throw new BeanstalkException($res['status']);
+        }
 	}
 
     /**
      * 列出当前监控的 tube
      *
-     * @return Promise<array>
+     * @return array
      */
 	public function listTubesWatched()
 	{
@@ -610,37 +589,35 @@ class BeanstalkClient
      * 读取返回的统计或列表信息
      *
      * @param string $cmd
-     * @return Promise<array>
+     * @return array
      */
 	protected function statsRead($cmd)
 	{
-        return call(function() use ($cmd) {
-            $res = yield $this->send($cmd, null, true, 0);
+        $res = $this->send($cmd, null, true, 0);
 
-            if ($res['status'] == 'OK') {
-                $body = rtrim($res['body']);
-                $data = array_slice(explode("\n", $body), 1);
-                $result = [];
-    
-                foreach ($data as $row) {
-                    if ($row[0] == '-') {
-                        $value = substr($row, 2);
-                        $key = null;
-                    } else {
-                        $pos = strpos($row, ':');
-                        $key = substr($row, 0, $pos);
-                        $value = substr($row, $pos+2);
-                    }
-                    if (is_numeric($value)) {
-                        $value = (int)$value == $value ? (int)$value : (float)$value;
-                    }
-                    isset($key) ? $result[$key] = $value : array_push($result, $value);
+        if ($res['status'] == 'OK') {
+            $body = rtrim($res['body']);
+            $data = array_slice(explode("\n", $body), 1);
+            $result = [];
+
+            foreach ($data as $row) {
+                if ($row[0] == '-') {
+                    $value = substr($row, 2);
+                    $key = null;
+                } else {
+                    $pos = strpos($row, ':');
+                    $key = substr($row, 0, $pos);
+                    $value = substr($row, $pos+2);
                 }
-                return $result;
-            } else {
-                throw new BeanstalkException($res['status']);
+                if (is_numeric($value)) {
+                    $value = (int)$value == $value ? (int)$value : (float)$value;
+                }
+                isset($key) ? $result[$key] = $value : array_push($result, $value);
             }
-        });
+            return $result;
+        } else {
+            throw new BeanstalkException($res['status']);
+        }
 	}
 
     /**
@@ -648,7 +625,7 @@ class BeanstalkClient
      *
      * @param string $tube 要暂停的 Tube
      * @param int $delay 延迟时间秒数
-     * @return Promise<bool>
+     * @return bool
      */
 	public function pauseTube($tube, $delay)
 	{
@@ -662,14 +639,14 @@ class BeanstalkClient
      * @param string $status 确认成功匹配状态
      * @param bool $chunk 是否大数据分块模式
      * @param int $bytesMetaPos 大数据分块长度数据所在位置，即状态如 "RESERVED" 后的描述，从0开始
-     * @return Promise<Array>
+     * @return array
      */
 	protected function send($cmd, $status=null, $chunk=false, $bytesMetaPos=0)
 	{
 		if (!$this->connected) {
 			throw new BeanstalkException('No connecting found while writing data to socket.');
         }
-        
+
         //前一个命令尚未完成时的并发处理
         if ($this->pending) {
             if ($this->concurrent) {
@@ -680,12 +657,12 @@ class BeanstalkClient
                         $e ? $defer->fail($e) : $defer->resolve($v);
                     });
                 });
-                return $defer->promise();
+                return await($defer->promise());
             } else {
                 throw new BeanstalkException('Cannot send command before previous command finished.');
             }
         }
-        
+
         $defer = new Deferred;
 
         $data = [
@@ -736,7 +713,7 @@ class BeanstalkClient
             $this->sending = func_get_args();
         }
 
-        //发送命令 
+        //发送命令
         $cmd .= "\r\n";
 
 		if ($this->debug) {
@@ -746,7 +723,7 @@ class BeanstalkClient
         $this->connection->send($cmd);
         $this->pending = $defer;
 
-        return $defer->promise();
+        return await($defer->promise());
 	}
 
 	protected function wrap($output, $out)
