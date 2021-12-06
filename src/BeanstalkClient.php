@@ -2,7 +2,7 @@
 
 namespace Wind\Beanstalk;
 
-use Amp\Deferred;
+use Amp\DeferredFuture as Deferred;
 use Wind\Utils\ArrayUtil;
 use Workerman\Connection\AsyncTcpConnection;
 use Workerman\Timer;
@@ -162,7 +162,7 @@ class BeanstalkClient
                     //恢复上次的命令执行
                     if ($sending) {
                         call_user_func_array([$this, 'send'], $sending)->onResolve(function($e, $v) use ($pending) {
-                            $e ? $pending->fail($e) : $pending->resolve($v);
+                            $e ? $pending->error($e) : $pending->complete($v);
                         });
                     }
                 });
@@ -203,7 +203,7 @@ class BeanstalkClient
                 Timer::add($this->reconnectDelay, asyncCallable([$this, 'connect']), [], false);
             } elseif ($this->pending) {
                 //不自动重连时，断开连接之前的动作抛出异常
-                $this->pending->fail(new BeanstalkException('Disconnected.'));
+                $this->pending->error(new BeanstalkException('Disconnected.'));
                 $this->pending = $this->connectDefer = null;
             }
 
@@ -228,7 +228,7 @@ class BeanstalkClient
         $this->connection->connect();
         $this->connectDefer = $defer;
 
-        return await($defer->promise());
+        return $defer->getFuture()->await();
     }
 
     /**
@@ -256,7 +256,7 @@ class BeanstalkClient
             $this->watchTubes = ['default'];
             $this->sending = null;
             $this->autoReconnect = $reconnect;
-            $defer->resolve();
+            $defer->complete();
         };
 
         //尽量使用 quit 命令断开连接
@@ -264,7 +264,7 @@ class BeanstalkClient
             $this->connection->destroy();
         }
 
-        return await($defer->promise());
+        return $defer->getFuture()->await();
     }
 
     /**
@@ -652,12 +652,12 @@ class BeanstalkClient
             if ($this->concurrent) {
                 $args = func_get_args();
                 $defer = new Deferred;
-                $this->pending->promise()->onResolve(function($e) use ($defer, $args) {
+                $this->pending->getFuture()->map(function($e) use ($defer, $args) {
                     call_user_func_array([$this, 'send'], $args)->onResolve(function($e, $v) use ($defer) {
-                        $e ? $defer->fail($e) : $defer->resolve($v);
+                        $e ? $defer->error($e) : $defer->complete($v);
                     });
                 });
-                return await($defer->promise());
+                return $defer->getFuture()->await();
             } else {
                 throw new BeanstalkException('Cannot send command before previous command finished.');
             }
@@ -698,12 +698,12 @@ class BeanstalkClient
                 if ($status !== null) {
                     //消息状态确认
                     if ($data['status'] != $status) {
-                        $defer->fail(new BeanstalkException($data['status']));
+                        $defer->error(new BeanstalkException($data['status']));
                     } else {
-                        $defer->resolve();
+                        $defer->complete();
                     }
                 } else {
-                    $defer->resolve($data);
+                    $defer->complete($data);
                 }
             }
         };
@@ -723,7 +723,7 @@ class BeanstalkClient
         $this->connection->send($cmd);
         $this->pending = $defer;
 
-        return await($defer->promise());
+        return $defer->getFuture()->await();
 	}
 
 	protected function wrap($output, $out)
