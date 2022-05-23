@@ -7,10 +7,6 @@ use Wind\Utils\ArrayUtil;
 use Workerman\Connection\AsyncTcpConnection;
 use Workerman\Timer;
 
-use function Amp\asyncCallable;
-use function Amp\await;
-use function Amp\defer;
-
 /**
  * 协程 Beanstalk 客户端
  */
@@ -54,13 +50,9 @@ class BeanstalkClient
     private $onErrorCallback = null;
     private $onCloseCallback = null;
 
-    /**
-     * Reading Deferred
-     *
-     * @var Deferred
-     */
-    private $pending = null;
-    private $connectDefer = null;
+    private ?Deferred $pending = null;
+
+    private ?Deferred $connectDefer = null;
 
     /**
      * 发送中的命令
@@ -161,9 +153,12 @@ class BeanstalkClient
 
                     //恢复上次的命令执行
                     if ($sending) {
-                        call_user_func_array([$this, 'send'], $sending)->onResolve(function($e, $v) use ($pending) {
-                            $e ? $pending->error($e) : $pending->complete($v);
-                        });
+                        try {
+                            $v = $this->send(...$sending);
+                            $pending->complete($v);
+                        } catch (\Throwable $e) {
+                            $pending->error($e);
+                        }
                     }
                 });
             } else {
@@ -216,7 +211,7 @@ class BeanstalkClient
         $defer = $this->connectDefer ?? new Deferred();
 
         $this->onConnectCallback = function() use ($defer) {
-            $defer->resolve();
+            $defer->complete();
         };
 
         if (!$this->autoReconnect) {
@@ -653,9 +648,12 @@ class BeanstalkClient
                 $args = func_get_args();
                 $defer = new Deferred;
                 $this->pending->getFuture()->map(function($e) use ($defer, $args) {
-                    call_user_func_array([$this, 'send'], $args)->onResolve(function($e, $v) use ($defer) {
-                        $e ? $defer->error($e) : $defer->complete($v);
-                    });
+                    try {
+                        $v = $this->send(...$args);
+                        $defer->complete($v);
+                    } catch (\Throwable $e) {
+                        $defer->error($e);
+                    }
                 });
                 return $defer->getFuture()->await();
             } else {
