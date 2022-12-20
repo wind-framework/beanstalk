@@ -71,10 +71,10 @@ class BeanstalkClient
 	 * @param string $host
 	 * @param int $port
      * @param array $options 连接选项，数据键值对，支持以下选项：
-     * (bool) autoReconnect：是否断线自动重连，默认：否。
+     * (bool) autoReconnect: 是否断线自动重连，默认：否。
      * 自动重连将会自动恢复以往正在发送的命令和动作（主动调用 close 不会）
-     * (int) reconnectDelay：重连间隔秒数，默认：5。
-     * (bool) concurrent：是否允许并发执行，默认：否。
+     * (int) reconnectDelay: 重连间隔秒数，默认：5。
+     * (bool) concurrent: 是否允许并发执行，默认：否。
      * 允许时可以同时调用多个命令，后面的命令会等待前一个命令完成后继续发送。
      * 此选项为 false 时，若在上一个命令尚未完成时发送命令则会抛出异常。
      * 此选项适合生产者使用，生产者可以使用单个链接并发的调用 put 进行放入消息，而不需要在并发 put 时使用多个链接。
@@ -107,7 +107,7 @@ class BeanstalkClient
         $connectTimer = Timer::add($this->connectTimeout, function() {
             $this->connection->destroy();
             if ($this->connectDefer) {
-                $this->connectDefer->fail(new BeanstalkException('Connect to beanstalkd timeout.'));
+                $this->connectDefer->error(new BeanstalkException('Connect to beanstalkd timeout.'));
                 $this->connectDefer = null;
             }
         }, [], false);
@@ -216,7 +216,7 @@ class BeanstalkClient
 
         if (!$this->autoReconnect) {
             $this->onErrorCallback = function($connection, $code, $message) use ($defer) {
-                $defer->fail(new BeanstalkException($message, $code));
+                $defer->error(new BeanstalkException($message, $code));
             };
         }
 
