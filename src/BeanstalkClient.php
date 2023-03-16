@@ -66,7 +66,7 @@ class BeanstalkClient
 
     /**
      * 发送中的命令
-     * 
+     *
      * 用于发送时中断后的命令恢复
      *
      * @var array|null
@@ -102,9 +102,9 @@ class BeanstalkClient
 
     /**
      * 连接到服务器
-     * 
+     *
      * 在使用任何命令前，需先连接到服务器
-     * 
+     *
      * @return Promise<bool>
      */
 	public function connect()
@@ -137,13 +137,13 @@ class BeanstalkClient
                     $pending = $this->pending;
                     $sending = $this->sending;
                     $this->pending = $this->sending = null;
-    
+
                     if ($this->tubeUsed != 'default') {
                         yield $this->useTube($this->tubeUsed);
                     }
-    
+
                     $watchDefault = false;
-    
+
                     foreach ($this->watchTubes as $tube) {
                         if ($tube == 'default') {
                             $watchDefault = true;
@@ -151,11 +151,11 @@ class BeanstalkClient
                             yield $this->watch($tube);
                         }
                     }
-    
+
                     if (!$watchDefault) {
                         yield $this->ignore('default');
                     }
-    
+
                     if (is_callable($this->onConnectCallback)) {
                         call_user_func($this->onConnectCallback);
                         $this->onConnectCallback = null;
@@ -175,7 +175,7 @@ class BeanstalkClient
                 }
             }
         };
-        
+
         $this->connection->onError = function($connection, $code, $message) use (&$connectTimer) {
             if ($connectTimer) {
                 Timer::del($connectTimer);
@@ -218,7 +218,7 @@ class BeanstalkClient
         };
 
         $defer = $this->connectDefer ?? new Deferred();
-        
+
         $this->onConnectCallback = function() use ($defer) {
             $defer->resolve();
         };
@@ -234,10 +234,10 @@ class BeanstalkClient
 
         return $defer->promise();
     }
-    
+
     /**
      * 主动关闭连接
-     * 
+     *
      * 注意
      * 主动关闭连接后再重新调用 connect() 连接成功并不会恢复之前的监控与 reserve 命令状态。
      * 主动关闭连接后并不会触发重新连接。
@@ -286,7 +286,7 @@ class BeanstalkClient
 
         return call(function() use ($cmd) {
             $res = yield $this->send($cmd);
-    
+
             if ($res['status'] == 'INSERTED') {
                 return $res['meta'][0];
             } else {
@@ -297,7 +297,7 @@ class BeanstalkClient
 
     /**
      * 使用指定 Tube
-     * 
+     *
      * 用于生产者。
      * 指定 put 命令存入消息的 tube 名称，不指定时默认为 default。
      *
@@ -326,7 +326,7 @@ class BeanstalkClient
 	public function reserve($timeout=null)
 	{
         $cmd = isset($timeout) ? sprintf('reserve-with-timeout %d', $timeout) : 'reserve';
-        
+
         return call(function() use ($cmd) {
             $res = yield $this->send($cmd, null, true, 1);
             if ($res['status'] == 'RESERVED') {
@@ -370,7 +370,7 @@ class BeanstalkClient
      * 将消息放入 Buried（失败）队列
      *
      * 放入 buried 队列后的消息可以由 kick 唤醒
-     * 
+     *
      * @param int $id
      * @param int $pri kick 出时的优先级
      * @return void
@@ -382,7 +382,7 @@ class BeanstalkClient
 
     /**
      * 延续消息处理时间
-     * 
+     *
      * 在处理期间的消息可以通过 touch 延迟 ttr 时间，当调用 touch 后，消息的 ttr 的时间将从头算起。
      *
      * @param int $id
@@ -395,7 +395,7 @@ class BeanstalkClient
 
     /**
      * 监控指定 tube 的消息
-     * 
+     *
      * 默认监控 default 的 tube 消息，调用此方法将添加更多的 tube 到监控中。
      * 可以使用 ignore 来取消指定 tube 的监控，如果连接断开后监控将重置为 default。
      * 如果 autoReconnect 设为 true，则自动重连成功后会继续保持之前的监控。
@@ -421,7 +421,7 @@ class BeanstalkClient
 
     /**
      * 忽略指定 Tube 的监控
-     * 
+     *
      * 忽略后的 tube 将不再获取其消息，同 watch，当 autoReconnect 为 true 时，则自动重连后将会继续忽略之前的设定。
      *
      * @param string $tube
@@ -443,7 +443,7 @@ class BeanstalkClient
 
     /**
      * 检查指定的消息
-     * 
+     *
      * 获取指定的消息内容，但不会改变消息状态
      *
      * @param int $id
@@ -466,7 +466,7 @@ class BeanstalkClient
 
     /**
      * 检查延迟队列中的下一条消息
-     * 
+     *
      * @return Promise<array>
      */
 	public function peekDelayed()
@@ -476,7 +476,7 @@ class BeanstalkClient
 
     /**
      * 检查失败队列中的下一条消息
-     * 
+     *
      * @return Promise<array>
      */
 	public function peekBuried()
@@ -486,7 +486,7 @@ class BeanstalkClient
 
     /**
      * 读取 peek 相应命令的响应
-     * 
+     *
      * @return Promise<array>
      */
 	protected function peekRead($cmd)
@@ -571,7 +571,7 @@ class BeanstalkClient
 
     /**
      * 列出所在存在的 Tube
-     * 
+     *
      * @return Promise<array>
      */
 	public function listTubes()
@@ -621,7 +621,7 @@ class BeanstalkClient
                 $body = rtrim($res['body']);
                 $data = array_slice(explode("\n", $body), 1);
                 $result = [];
-    
+
                 foreach ($data as $row) {
                     if ($row[0] == '-') {
                         $value = substr($row, 2);
@@ -669,7 +669,7 @@ class BeanstalkClient
 		if (!$this->connected) {
 			throw new BeanstalkException('No connecting found while writing data to socket.');
         }
-        
+
         //前一个命令尚未完成时的并发处理
         if ($this->pending) {
             if ($this->concurrent) {
@@ -685,7 +685,7 @@ class BeanstalkClient
                 throw new BeanstalkException('Cannot send command before previous command finished.');
             }
         }
-        
+
         $defer = new Deferred;
 
         $data = [
@@ -736,7 +736,7 @@ class BeanstalkClient
             $this->sending = func_get_args();
         }
 
-        //发送命令 
+        //发送命令
         $cmd .= "\r\n";
 
 		if ($this->debug) {
