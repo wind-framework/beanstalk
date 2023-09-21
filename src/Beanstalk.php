@@ -11,7 +11,7 @@ use Wind\Utils\ArrayUtil;
 /**
  * Wind Framework Beanstalk Client
  */
-class Client extends SimpleTextClient
+class Beanstalk extends SimpleTextClient
 {
 
 	const DEFAULT_PRI = 1024;
