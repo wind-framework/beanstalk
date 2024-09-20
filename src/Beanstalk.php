@@ -97,7 +97,7 @@ class Beanstalk extends SimpleTextClient
         $headEnding = strpos($buffer, "\r\n");
 
         if ($headEnding === false) {
-            return 128;
+            return 0;
         }
 
         $meta = explode(' ', substr($buffer, 0, $headEnding));
@@ -109,11 +109,11 @@ class Beanstalk extends SimpleTextClient
         };
 
         if ($bytes == -1) {
-            return 0;
+            return -1;
         }
 
         //head\r\nbytes\r\n
-        return $bytes + $headEnding + 4 - strlen($buffer);
+        return $headEnding + $bytes + 4;
     }
 
     /**
@@ -121,13 +121,13 @@ class Beanstalk extends SimpleTextClient
      *
      * @param string $cmd
      * @param string $checkStatus 确认成功匹配状态
-     * @param bool $direct
+     * @param bool $withoutQueue
      * @return array
      */
-	protected function send($cmd, $checkStatus=null, $direct=false)
+	protected function send($cmd, $checkStatus=null, $withoutQueue=false)
     {
         $command = new Command($cmd, $checkStatus);
-        return $this->execute($command, $direct);
+        return $this->execute($command, $withoutQueue);
     }
 
     /**
@@ -140,7 +140,7 @@ class Beanstalk extends SimpleTextClient
      */
 	public function useTube($tube)
 	{
-        $ret = $this->send(sprintf('use %s', $tube), direct: $this->status == self::STATUS_CONNECTING);
+        $ret = $this->send(sprintf('use %s', $tube), withoutQueue: $this->status == self::STATUS_CONNECTING);
         if ($ret['status'] == 'USING' && $ret['meta'][0] == $tube) {
             $this->tubeUsed = $tube;
             return true;
@@ -161,7 +161,7 @@ class Beanstalk extends SimpleTextClient
      */
 	public function watch($tube)
 	{
-        $res = $this->send(sprintf('watch %s', $tube), direct: $this->status == self::STATUS_CONNECTING);
+        $res = $this->send(sprintf('watch %s', $tube), withoutQueue: $this->status == self::STATUS_CONNECTING);
 
         if ($res['status'] == 'WATCHING') {
             if (!in_array($tube, $this->watchTubes)) {
@@ -183,7 +183,7 @@ class Beanstalk extends SimpleTextClient
      */
 	public function ignore($tube)
 	{
-        $res = $this->send(sprintf('ignore %s', $tube), direct: $this->status == self::STATUS_CONNECTING);
+        $res = $this->send(sprintf('ignore %s', $tube), withoutQueue: $this->status == self::STATUS_CONNECTING);
 
         if ($res['status'] == 'WATCHING') {
             ArrayUtil::removeElement($this->watchTubes, $tube);
